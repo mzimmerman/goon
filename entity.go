@@ -135,7 +135,7 @@ func setStructKey(src interface{}, key *datastore.Key) error {
 	k := t.Kind()
 
 	if k != reflect.Ptr {
-		return errors.New(fmt.Sprintf("goon: Expected pointer to a struct, got instead: %v", k))
+		return fmt.Errorf("goon: Expected pointer to struct, got instead: %v", k)
 	}
 
 	v = reflect.Indirect(v)

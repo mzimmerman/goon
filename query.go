@@ -61,9 +61,13 @@ func (g *Goon) GetAll(q *datastore.Query, dst interface{}) ([]*datastore.Key, er
 	// assert that it needs to be a slice of *struct
 
 	for i, k := range keys {
-		e := v.Index(i).Interface()
-		setStructKey(e, k)
 
+		//e := v.Index(i).Interface()
+		//setStructKey(e, k)
+		e := v.Index(i).Addr().Interface()
+		if err := setStructKey(e, k); err != nil {
+			return nil, err
+		}
 		if !g.inTransaction {
 			g.cache[memkey(k)] = &e
 		}
