@@ -143,7 +143,7 @@ func TestMain(t *testing.T) {
 		t.Errorf("putmulti: unexpected error")
 	}
 	query := datastore.NewQuery("HasKey").Ancestor(hkp.Key).Filter("Name =", "two")
-	var hks []HasKey
+	var hks []*HasKey
 	_, err = n.GetAll(query, &hks)
 	if err != nil {
 		t.Errorf("getmulti: unexpected error - %v", err)
