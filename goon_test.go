@@ -17,6 +17,7 @@
 package goon
 
 import (
+	"appengine/aetest"
 	"appengine/datastore"
 	"appengine/memcache"
 	"github.com/mzimmerman/appenginetesting"
@@ -25,8 +26,7 @@ import (
 )
 
 func TestMain(t *testing.T) {
-	c, err := appenginetesting.NewContext(&appenginetesting.Options{Debug: "debug"})
-	//c, err := appenginetesting.NewContext(nil)
+	c, err := appenginetesting.NewContext(nil)
 	if err != nil {
 		t.Fatalf("Could not create testing context")
 	}
@@ -111,6 +111,8 @@ func TestMain(t *testing.T) {
 	}
 	if err := n.GetMulti(&nes); err != nil {
 		t.Errorf("put: unexpected error")
+	} else if *es[0] != *nes[0] || *es[1] != *nes[1] {
+		t.Errorf("put: bad results")
 	} else {
 		nesk0 := n.Key(nes[0])
 		if !nesk0.Equal(datastore.NewKey(c, "HasId", "", 1, nil)) {
@@ -615,4 +617,54 @@ type GoonStore interface {
 type GoonTest struct {
 	orig   GoonStore
 	putErr bool
+}
+
+type PutGet struct {
+	ID    int64 `datastore:"-" goon:"id"`
+	Value int32
+}
+
+func TestPutGet(t *testing.T) {
+	c, err := aetest.NewContext(nil)
+	defer c.Close()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	g := FromContext(c)
+	key, err := g.Put(&PutGet{ID: 12, Value: 15})
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if key.IntID() != 12 {
+		t.Fatal("ID should be 12 but is", key.IntID())
+	}
+
+	// Datastore Get
+	dsPutGet := &PutGet{}
+	err = datastore.Get(c,
+		datastore.NewKey(c, "PutGet", "", 12, nil), dsPutGet)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if dsPutGet.Value != 15 {
+		t.Fatal("dsPutGet.Value should be 15 but is",
+			dsPutGet.Value)
+	}
+
+	// Goon Get
+	goonPutGet := &PutGet{ID: 12}
+	v := []interface{}{goonPutGet}
+	err = g.GetMulti(&v)
+	t.Log("v0", v[0])
+	t.Log("gpg", goonPutGet)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if goonPutGet.ID != 12 {
+		t.Fatal("goonPutGet.ID should be 12 but is", goonPutGet.ID)
+	}
+	if goonPutGet.Value != 15 {
+		t.Fatal("goonPutGet.Value should be 15 but is",
+			goonPutGet.Value)
+	}
 }

@@ -17,13 +17,14 @@
 package goon
 
 import (
-	"appengine"
-	"appengine/datastore"
-	"appengine/memcache"
 	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
+
+	"appengine"
+	"appengine/datastore"
+	"appengine/memcache"
 )
 
 var (
@@ -339,27 +340,19 @@ func (g *Goon) GetMulti(dst interface{}) error {
 	v := reflect.Indirect(reflect.ValueOf(dst))
 	for i, key := range keys {
 		m := memkey(key)
-		if _, present := g.cache[m]; present {
-			vi := v.Index(i).Elem()
-			if !vi.CanSet() {
-				vi = vi.Elem()
-			}
-			dst := reflect.ValueOf(g.cache[m])
-			for {
-				if dst.Kind() == reflect.Struct {
-					break
-				}
-				dst = dst.Elem()
-			}
-			vi.Set(dst)
+		if s, present := g.cache[m]; present && false {
+			vi := v.Index(i)
+			vi.Set(reflect.ValueOf(s))
 		} else {
 			memkeys = append(memkeys, m)
 			mixs = append(mixs, i)
 		}
 	}
+	if len(memkeys) == 0 {
+		return nil
+	}
 
 	memvalues, _ := memcache.GetMulti(g.context, memkeys)
-
 	for i, m := range memkeys {
 		d := v.Index(mixs[i]).Interface()
 		if s, present := memvalues[m]; present {
