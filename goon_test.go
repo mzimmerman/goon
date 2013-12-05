@@ -19,7 +19,7 @@ package goon
 import (
 	"appengine/datastore"
 	"appengine/memcache"
-	"github.com/icub3d/appenginetesting"
+	"github.com/mzimmerman/appenginetesting"
 	"reflect"
 	"testing"
 )
