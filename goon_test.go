@@ -20,17 +20,16 @@ import (
 	"appengine/aetest"
 	"appengine/datastore"
 	"appengine/memcache"
-	"github.com/mzimmerman/appenginetesting"
 	"reflect"
 	"testing"
 )
 
 func TestMain(t *testing.T) {
-	c, err := appenginetesting.NewContext(nil)
-	if err != nil {
-		t.Fatalf("Could not create testing context")
-	}
+	c, err := aetest.NewContext(nil)
 	defer c.Close()
+	if err != nil {
+		t.Fatalf("Could not create testing context - %v", err)
+	}
 
 	n := FromContext(c)
 	// key tests
