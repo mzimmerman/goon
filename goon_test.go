@@ -17,11 +17,12 @@
 package goon
 
 import (
+	"reflect"
+	"testing"
+
 	"appengine/aetest"
 	"appengine/datastore"
 	"appengine/memcache"
-	"reflect"
-	"testing"
 )
 
 func TestMain(t *testing.T) {
@@ -78,9 +79,6 @@ func TestMain(t *testing.T) {
 	}
 
 	// datastore tests
-	keys, _ := datastore.NewQuery("HasId").KeysOnly().GetAll(c, nil)
-	datastore.DeleteMulti(c, keys)
-	memcache.Flush(c)
 	if err := n.Get(&HasId{Id: 0}); err == nil {
 		t.Errorf("ds: expected error, we're fetching from the datastore on an incomplete key!")
 	}
