@@ -19,8 +19,10 @@ package goon
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"reflect"
+	"time"
 
 	"appengine"
 	"appengine/datastore"
@@ -34,11 +36,20 @@ var (
 
 // Goon holds the app engine context and request memory cache.
 type Goon struct {
+	testing       bool // if Goon should simulate leggy responses on RPCs
 	context       appengine.Context
 	cache         map[string]interface{}
 	inTransaction bool
 	toSet         map[string]interface{}
 	toDelete      []string
+}
+
+// Used for testing to simulate laggy responses to RPCs
+func (g *Goon) fakeDelay(max time.Duration) {
+	if !g.testing { // if we're in production, just move along
+		return
+	}
+	time.Sleep(time.Duration(rand.Int63n(int64(max))))
 }
 
 // Returns the internal appengine.Context in use
@@ -178,8 +189,10 @@ func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 	}
 
 	// Memcache needs to be updated after the datastore to prevent a common race condition
-	defer memcache.DeleteMulti(g.context, memkeys)
-
+	defer func() {
+		memcache.DeleteMulti(g.context, memkeys)
+		g.fakeDelay(time.Millisecond * 2)
+	}()
 	v := reflect.Indirect(reflect.ValueOf(src))
 	for i := 0; i <= len(keys)/putMultiLimit; i++ {
 		lo := i * putMultiLimit
@@ -188,6 +201,7 @@ func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 			hi = len(keys)
 		}
 		rkeys, err := datastore.PutMulti(g.context, keys[lo:hi], v.Slice(lo, hi).Interface())
+		g.fakeDelay(time.Millisecond * 15)
 		if err != nil {
 			g.error(err)
 			return nil, err
@@ -275,8 +289,12 @@ func (g *Goon) putMemcache(srcs []interface{}) error {
 			Value: gob,
 		}
 	}
-
-	memcache.SetMulti(g.context, items)
+	err := memcache.AddMulti(g.context, items)
+	g.fakeDelay(time.Millisecond * 3)
+	if err != nil {
+		g.error(fmt.Errorf("Race condition detected, two concurrent requests did a Get/GetMulti over the same entity/entities"))
+		return err
+	}
 	g.putMemoryMulti(srcs)
 	return nil
 }
@@ -327,7 +345,9 @@ func (g *Goon) GetMulti(dst interface{}) error {
 
 	if g.inTransaction {
 		// todo: support getMultiLimit in transactions
-		return datastore.GetMulti(g.context, keys, dst)
+		res := datastore.GetMulti(g.context, keys, dst)
+		g.fakeDelay(time.Millisecond * 10)
+		return res
 	}
 
 	var dskeys []*datastore.Key
@@ -353,6 +373,7 @@ func (g *Goon) GetMulti(dst interface{}) error {
 	}
 
 	memvalues, _ := memcache.GetMulti(g.context, memkeys)
+	g.fakeDelay(time.Millisecond * 2)
 	for i, m := range memkeys {
 		d := v.Index(mixs[i]).Interface()
 		if s, present := memvalues[m]; present {
@@ -384,6 +405,7 @@ func (g *Goon) GetMulti(dst interface{}) error {
 			hi = len(dskeys)
 		}
 		gmerr := datastore.GetMulti(g.context, dskeys[lo:hi], dsdst[lo:hi])
+		g.fakeDelay(time.Millisecond * 10)
 		if gmerr != nil {
 			merr, ok := gmerr.(appengine.MultiError)
 			if !ok {
@@ -435,7 +457,10 @@ func (g *Goon) DeleteMulti(keys []*datastore.Key) error {
 	}
 
 	// Memcache needs to be updated after the datastore to prevent a common race condition
-	defer memcache.DeleteMulti(g.context, memkeys)
+	defer func() {
+		memcache.DeleteMulti(g.context, memkeys)
+		g.fakeDelay(time.Millisecond * 2)
+	}()
 
 	for i := 0; i <= len(keys)/deleteMultiLimit; i++ {
 		lo := i * deleteMultiLimit
@@ -444,8 +469,10 @@ func (g *Goon) DeleteMulti(keys []*datastore.Key) error {
 			hi = len(keys)
 		}
 		if err := datastore.DeleteMulti(g.context, keys[lo:hi]); err != nil {
+			g.fakeDelay(time.Millisecond * 3)
 			return err
 		}
+		g.fakeDelay(time.Millisecond * 5)
 	}
 	return nil
 }
