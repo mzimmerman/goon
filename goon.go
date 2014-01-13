@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sync"
 
 	"appengine"
 	"appengine/datastore"
@@ -36,9 +37,10 @@ var (
 type Goon struct {
 	context       appengine.Context
 	cache         map[string]interface{}
+	cacheLock     sync.RWMutex // protect the cache from concurrent goroutines to speed up RPC access
 	inTransaction bool
 	toSet         map[string]interface{}
-	toDelete      []string
+	toDelete      map[string]bool
 }
 
 // Returns the internal appengine.Context in use
@@ -119,16 +121,19 @@ func (g *Goon) RunInTransaction(f func(tg *Goon) error, opts *datastore.Transact
 			context:       tc,
 			inTransaction: true,
 			toSet:         make(map[string]interface{}),
+			toDelete:      make(map[string]bool),
 		}
 		return f(ng)
 	}, opts)
 
 	if err == nil {
+		g.cacheLock.Lock()
+		defer g.cacheLock.Unlock()
 		for k, v := range ng.toSet {
 			g.cache[k] = v
 		}
 
-		for _, k := range ng.toDelete {
+		for k := range ng.toDelete {
 			delete(g.cache, k)
 		}
 	} else {
@@ -200,7 +205,9 @@ func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 				keys[i] = rkeys[i]
 			}
 			if g.inTransaction {
-				g.toSet[memkey(rkeys[i])] = vi
+				mk := memkey(rkeys[i])
+				delete(g.toDelete, mk)
+				g.toSet[mk] = vi
 			}
 		}
 	}
@@ -252,6 +259,8 @@ func (g *Goon) putMemoryMulti(src interface{}) {
 
 func (g *Goon) putMemory(src interface{}) {
 	key, _ := g.getStructKey(src)
+	g.cacheLock.Lock()
+	defer g.cacheLock.Unlock()
 	if reflect.ValueOf(src).Kind() == reflect.Ptr && reflect.ValueOf(src).Elem().Kind() == reflect.Struct {
 		g.cache[memkey(key)] = reflect.ValueOf(src).Interface()
 	} else if reflect.ValueOf(src).Kind() == reflect.Struct {
@@ -289,10 +298,6 @@ func (g *Goon) Get(dst interface{}) error {
 	if set.Kind() != reflect.Ptr {
 		return errors.New(fmt.Sprintf("goon: expected pointer to a struct, got %#v", dst))
 	}
-	set = set.Elem()
-	if !set.CanSet() {
-		return errors.New(fmt.Sprintf("goon: provided %#v, which cannot be changed", dst))
-	}
 	dsts := []interface{}{dst}
 	if err := g.GetMulti(&dsts); err != nil {
 		// Look for an embedded error if it's multi
@@ -306,6 +311,7 @@ func (g *Goon) Get(dst interface{}) error {
 		// Not multi, normal error
 		return err
 	}
+	set.Elem().Set(reflect.ValueOf(dsts[0]).Elem())
 	return nil
 }
 
@@ -338,9 +344,10 @@ func (g *Goon) GetMulti(dst interface{}) error {
 	var mixs []int
 
 	v := reflect.Indirect(reflect.ValueOf(dst))
+	g.cacheLock.RLock()
 	for i, key := range keys {
 		m := memkey(key)
-		if s, present := g.cache[m]; present && false {
+		if s, present := g.cache[m]; present {
 			vi := v.Index(i)
 			vi.Set(reflect.ValueOf(s))
 		} else {
@@ -348,6 +355,8 @@ func (g *Goon) GetMulti(dst interface{}) error {
 			mixs = append(mixs, i)
 		}
 	}
+	g.cacheLock.RUnlock()
+
 	if len(memkeys) == 0 {
 		return nil
 	}
@@ -363,12 +372,7 @@ func (g *Goon) GetMulti(dst interface{}) error {
 			}
 			g.putMemory(d)
 		} else {
-			key, err := g.getStructKey(d)
-			if err != nil {
-				g.error(err)
-				return err
-			}
-			dskeys = append(dskeys, key)
+			dskeys = append(dskeys, keys[mixs[i]])
 			dsdst = append(dsdst, d)
 			dixs = append(dixs, mixs[i])
 		}
@@ -423,16 +427,20 @@ const deleteMultiLimit = 500
 // DeleteMulti is a batch version of Delete.
 func (g *Goon) DeleteMulti(keys []*datastore.Key) error {
 	memkeys := make([]string, len(keys))
+
+	g.cacheLock.Lock()
 	for i, k := range keys {
 		mk := memkey(k)
 		memkeys[i] = mk
 
 		if g.inTransaction {
-			g.toDelete = append(g.toDelete, mk)
+			delete(g.toSet, mk)
+			g.toDelete[mk] = true
 		} else {
 			delete(g.cache, mk)
 		}
 	}
+	g.cacheLock.Unlock()
 
 	// Memcache needs to be updated after the datastore to prevent a common race condition
 	defer memcache.DeleteMulti(g.context, memkeys)
