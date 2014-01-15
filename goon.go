@@ -86,7 +86,7 @@ func (g *Goon) extractKeys(src interface{}, allowIncomplete bool) ([]*datastore.
 			return nil, err
 		}
 		if !allowIncomplete && key.Incomplete() {
-			return nil, errors.New("goon: cannot find a key for struct")
+			return nil, fmt.Errorf("goon: cannot find a key for struct - %v", vi.Interface())
 		}
 		keys[i] = key
 	}
@@ -167,7 +167,7 @@ const putMultiLimit = 500
 func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 	item := reflect.ValueOf(src)
 	if item.Kind() != reflect.Ptr || item.Elem().Kind() != reflect.Slice {
-		return nil, errors.New(fmt.Sprintf("goon: must provide pointer to slice of pointer to struct, supplied - %#v", src))
+		return nil, fmt.Errorf("goon: must provide pointer to slice of pointer to struct, supplied - %#v", src)
 	}
 
 	keys, err := g.extractKeys(src, true) // allow incompletes on a Put request as the datastore will create the key
@@ -235,16 +235,9 @@ func (g *Goon) PutComplete(src interface{}) (*datastore.Key, error) {
 
 // PutMultiComplete is like PutMulti, but errors if a key is incomplete.
 func (g *Goon) PutMultiComplete(src interface{}) ([]*datastore.Key, error) {
-	keys, err := g.extractKeys(src, false)
+	_, err := g.extractKeys(src, false)
 	if err != nil {
 		return nil, err
-	}
-	for i, k := range keys {
-		if k.Incomplete() {
-			err := fmt.Errorf("goon: incomplete key (%dth index): %v", i, k)
-			g.error(err)
-			return nil, err
-		}
 	}
 	return g.PutMulti(src)
 }

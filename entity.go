@@ -17,13 +17,14 @@
 package goon
 
 import (
-	"appengine/datastore"
 	"bytes"
 	"encoding/gob"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
+
+	"appengine/datastore"
 )
 
 func toGob(src interface{}) ([]byte, error) {
@@ -52,7 +53,7 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 	k := t.Kind()
 
 	if k != reflect.Struct {
-		return nil, errors.New(fmt.Sprintf("goon: Expected struct, got instead: %v", k))
+		return nil, fmt.Errorf("goon: Expected struct, got instead: %v", k)
 	}
 
 	var parent *datastore.Key
@@ -80,6 +81,9 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 						return nil, errors.New("goon: Only one field may be marked id")
 					}
 					stringID = vf.String()
+					if stringID == "" {
+						return nil, errors.New("goon: Cannot have an incomplete *datastore.Key for a String ID object")
+					}
 				case reflect.TypeOf(&datastore.Key{}).Kind():
 					if stringID != "" || intID != 0 {
 						return nil, errors.New("goon: Only one field may be marked id")

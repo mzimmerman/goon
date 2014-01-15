@@ -51,6 +51,7 @@ func TestGoon(t *testing.T) {
 			HasKind{Id: 1, Kind: "OtherKind"},
 			datastore.NewKey(c, "OtherKind", "", 1, nil),
 		},
+
 		{
 			HasDefaultKind{Id: 1, Kind: "OtherKind"},
 			datastore.NewKey(c, "OtherKind", "", 1, nil),
@@ -78,6 +79,9 @@ func TestGoon(t *testing.T) {
 	}
 
 	// datastore tests
+	keys, _ := datastore.NewQuery("HasId").KeysOnly().GetAll(c, nil)
+	datastore.DeleteMulti(c, keys)
+	memcache.Flush(c)
 	if err := n.Get(&HasId{Id: 0}); err == nil {
 		t.Errorf("ds: expected error, we're fetching from the datastore on an incomplete key!")
 	}
@@ -98,9 +102,15 @@ func TestGoon(t *testing.T) {
 	}
 	if err := n.GetMulti(&es); err == nil {
 		t.Errorf("ds: expected error")
+	} else if !NotFound(err, 0) {
+		t.Errorf("ds: not found error 0")
+	} else if !NotFound(err, 1) {
+		t.Errorf("ds: not found error 1")
+	} else if NotFound(err, 2) {
+		t.Errorf("ds: not found error 2")
 	}
-	if _, err := n.PutMulti(&es); err != nil {
-		t.Errorf("put: unexpected error")
+	if keys, err = n.PutMulti(&es); err != nil {
+		t.Errorf("put: unexpected error - %v", err)
 	}
 	if err := n.GetMulti(&es); err != nil {
 		t.Errorf("ds: unexpected error")
@@ -321,7 +331,6 @@ func TestGoon(t *testing.T) {
 		GoonTest{&HasKind{Name: "orphan", Kind: "other"}, false},
 		GoonTest{&HasParent{Name: "orphan"}, false},
 		GoonTest{&HasParent{Name: "child", P: father.Self(n)}, false},
-		GoonTest{HasString{Id: "orphan"}, true},
 		GoonTest{&HasString{Name: "orphan", Id: "hasstringid"}, false},
 	}
 
@@ -464,6 +473,26 @@ func TestGoon(t *testing.T) {
 			}
 		}
 	}
+	// Since the datastore can't assign a key to a String ID, test to make sure goon stops it from happening
+	hasString := new(HasString)
+	_, err = n.PutComplete(hasString)
+	if err == nil {
+		t.Errorf("Cannot put an incomplete object using PutComplete - %v", hasString)
+	}
+	_, err = n.Put(hasString)
+	if err == nil {
+		t.Errorf("Cannot put an incomplete string Id object as the datastore will populate an int64 id instead - %#v", hasString)
+	}
+	hasString.Id = "hello"
+	_, err = n.PutComplete(hasString)
+	if err != nil {
+		t.Errorf("Error putting hasString object - %v", hasString)
+	}
+	_, err = n.Put(hasString)
+	if err != nil {
+		t.Errorf("Error putting hasString object - %v", hasString)
+	}
+
 }
 
 type keyTest struct {
@@ -615,6 +644,11 @@ type GoonTest struct {
 	putErr bool
 }
 
+type TwoId struct {
+	IntId    int64  `goon:"id"`
+	StringId string `goon:"id"`
+}
+
 type PutGet struct {
 	ID    int64 `datastore:"-" goon:"id"`
 	Value int32
@@ -645,10 +679,10 @@ func TestRace(t *testing.T) {
 
 func TestPutGet(t *testing.T) {
 	c, err := aetest.NewContext(nil)
-	defer c.Close()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
+	defer c.Close()
 	g := FromContext(c)
 
 	key, err := g.Put(&PutGet{ID: 12, Value: 15})
