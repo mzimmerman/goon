@@ -82,7 +82,7 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 					}
 					stringID = vf.String()
 					if stringID == "" {
-						return nil, errors.New("goon: Cannot have an incomplete *datastore.Key for a String ID object")
+						return nil, errors.New("goon: Cannot have a blank Id a String Id object")
 					}
 				case reflect.TypeOf(&datastore.Key{}).Kind():
 					if stringID != "" || intID != 0 {
@@ -93,6 +93,8 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 						setStructKey(src, key)
 						return key, nil
 					}
+				default:
+					return nil, fmt.Errorf("goon: ID field must be int64 or string in %v", t.Name())
 				}
 			} else if tagValue == "kind" {
 				if vf.Kind() == reflect.String {
@@ -119,7 +121,7 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 	if kind == "" {
 		kind = typeName(src)
 	}
-	// can be an incomplete Key
+	// can be an incomplete Key but not for String Id objects
 	return datastore.NewKey(g.context, kind, stringID, intID, parent), nil
 }
 
