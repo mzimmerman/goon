@@ -82,7 +82,7 @@ func (g *Goon) getStructKey(src interface{}) (*datastore.Key, error) {
 					}
 					stringID = vf.String()
 					if stringID == "" {
-						return nil, errors.New("goon: Cannot have a blank Id a String Id object")
+						return nil, fmt.Errorf("goon: String id field must be populated in %v", src)
 					}
 				case reflect.TypeOf(&datastore.Key{}).Kind():
 					if stringID != "" || intID != 0 {
