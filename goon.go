@@ -61,11 +61,6 @@ type Goon struct {
 	toDelete      map[string]bool
 }
 
-// Returns the internal appengine.Context in use
-func (g *Goon) C() appengine.Context {
-	return g.context
-}
-
 func memkey(k *datastore.Key) string {
 	// Versioning, so that incompatible changes to the cache system won't cause problems
 	return "g2:" + k.Encode()

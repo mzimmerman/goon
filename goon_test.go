@@ -1265,7 +1265,7 @@ func TestGoon(t *testing.T) {
 
 	hk4 := &HasKey{Key: hk.Key}
 	delete(n.cache, memkey(hk4.Key))
-	if memcache.Flush(n.context) != nil {
+	if memcache.Flush(n.Context) != nil {
 		t.Errorf("Unable to flush memcache")
 	}
 	if err := n.Get(hk4); err != nil {
