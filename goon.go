@@ -26,15 +26,19 @@ import (
 	"sync"
 	"time"
 
-	"appengine"
-	"appengine/datastore"
-	"appengine/memcache"
+	"google.golang.org/appengine"
+	"google.golang.org/appengine/datastore"
+	"google.golang.org/appengine/memcache"
+
+	"golang.org/x/net/context"
+
+	"google.golang.org/appengine/log"
 )
 
 var (
-	// LogErrors issues appengine.Context.Errorf on any error.
+	// LogErrors issues context.Context.Errorf on any error.
 	LogErrors = true
-	// LogTimeoutErrors issues appengine.Context.Warningf on memcache timeout errors.
+	// LogTimeoutErrors issues context.Context.Warningf on memcache timeout errors.
 	LogTimeoutErrors = false
 
 	// MemcachePutTimeoutThreshold is the number of bytes at which the memcache
@@ -53,7 +57,7 @@ var (
 
 // Goon holds the app engine context and the request memory cache.
 type Goon struct {
-	Context       appengine.Context
+	Context       context.Context
 	cache         map[string]interface{}
 	cacheLock     sync.RWMutex // protect the cache from concurrent goroutines to speed up RPC access
 	inTransaction bool
@@ -77,7 +81,7 @@ func NewGoon(r *http.Request) *Goon {
 
 // FromContext creates a new Goon object from the given appengine Context.
 // Useful with profiling packages like appstats.
-func FromContext(c appengine.Context) *Goon {
+func FromContext(c context.Context) *Goon {
 	return &Goon{
 		Context:          c,
 		cache:            make(map[string]interface{}),
@@ -91,15 +95,15 @@ func (g *Goon) error(err error) {
 	}
 	_, filename, line, ok := runtime.Caller(1)
 	if ok {
-		g.Context.Errorf("goon - %s:%d - %v", filepath.Base(filename), line, err)
+		log.Errorf(g.Context, "goon - %s:%d - %v", filepath.Base(filename), line, err)
 	} else {
-		g.Context.Errorf("goon - %v", err)
+		log.Errorf(g.Context, "goon - %v", err)
 	}
 }
 
 func (g *Goon) timeoutError(err error) {
 	if LogTimeoutErrors {
-		g.Context.Warningf("goon memcache timeout: %v", err)
+		log.Warningf(g.Context, "goon memcache timeout: %v", err)
 	}
 }
 
@@ -158,7 +162,7 @@ func (g *Goon) KeyError(src interface{}) (*datastore.Key, error) {
 // https://developers.google.com/appengine/docs/go/datastore/reference#RunInTransaction
 func (g *Goon) RunInTransaction(f func(tg *Goon) error, opts *datastore.TransactionOptions) error {
 	var ng *Goon
-	err := datastore.RunInTransaction(g.Context, func(tc appengine.Context) error {
+	err := datastore.RunInTransaction(g.Context, func(tc context.Context) error {
 		ng = &Goon{
 			Context:          tc,
 			inTransaction:    true,
@@ -357,7 +361,10 @@ func (g *Goon) putMemcache(srcs []interface{}, exists []byte) error {
 	}
 	errc := make(chan error)
 	go func() {
-		errc <- memcache.SetMulti(appengine.Timeout(g.Context, memcacheTimeout), items)
+		ctx, cancel := context.WithTimeout(g.Context, memcacheTimeout)
+		err := memcache.SetMulti(ctx, items)
+		cancel()
+		errc <- err
 	}()
 	g.putMemoryMulti(srcs, exists)
 	err := <-errc
@@ -449,8 +456,9 @@ func (g *Goon) GetMulti(dst interface{}) error {
 	}
 
 	multiErr, any := make(appengine.MultiError, len(keys)), false
-
-	memvalues, err := memcache.GetMulti(appengine.Timeout(g.Context, MemcacheGetTimeout), memkeys)
+	toc, cancel := context.WithTimeout(g.Context, MemcacheGetTimeout)
+	memvalues, err := memcache.GetMulti(toc, memkeys)
+	cancel()
 	if appengine.IsTimeoutError(err) {
 		g.timeoutError(err)
 		err = nil

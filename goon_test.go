@@ -22,10 +22,13 @@ import (
 	"testing"
 	"time"
 
-	"appengine"
-	"appengine/aetest"
-	"appengine/datastore"
-	"appengine/memcache"
+	"google.golang.org/appengine"
+
+	"golang.org/x/net/context"
+
+	"google.golang.org/appengine/aetest"
+	"google.golang.org/appengine/datastore"
+	"google.golang.org/appengine/memcache"
 )
 
 // *[]S, *[]*S, *[]I, []S, []*S, []I
@@ -154,7 +157,7 @@ type ivItemI interface {
 
 var ivItems []ivItem
 
-func initializeIvItems(c appengine.Context) {
+func initializeIvItems(c context.Context) {
 	t1 := time.Now().Truncate(time.Microsecond)
 	t2 := t1.Add(time.Second * 1)
 	t3 := t1.Add(time.Second * 2)
@@ -742,11 +745,11 @@ func validateInputVarietyTXNGet(t *testing.T, g *Goon, srcType, dstType, mode in
 }
 
 func TestInputVariety(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
 	g := FromContext(c)
 
 	initializeIvItems(c)
@@ -846,11 +849,12 @@ type MigrationB struct {
 }
 
 func TestMigration(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	// Create & save an entity with the original structure
@@ -956,11 +960,12 @@ func verifyMigration(t *testing.T, g *Goon, migA *MigrationA, debugInfo string) 
 }
 
 func TestTXNRace(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	// Create & store some test data
@@ -1054,11 +1059,12 @@ func TestTXNRace(t *testing.T) {
 }
 
 func TestNegativeCacheHit(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	hid := &HasId{Id: 1}
@@ -1079,11 +1085,12 @@ func TestNegativeCacheHit(t *testing.T) {
 }
 
 func TestCaches(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	// Put *struct{}
@@ -1168,11 +1175,12 @@ func TestCaches(t *testing.T) {
 }
 
 func TestGoon(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	n := FromContext(c)
 
 	// Don't want any of these tests to hit the timeout threshold on the devapp server
@@ -2167,11 +2175,12 @@ type PutGet struct {
 // Using multiple goroutines per http request is recommended here:
 // http://talks.golang.org/2013/highperf.slide#22
 func TestRace(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	var hasIdSlice []*HasId
@@ -2218,11 +2227,12 @@ func TestRace(t *testing.T) {
 }
 
 func TestPutGet(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
+
 	g := FromContext(c)
 
 	key, err := g.Put(&PutGet{ID: 12, Value: 15})
@@ -2297,12 +2307,12 @@ func prefixKindName(src interface{}) string {
 }
 
 func TestCustomKindName(t *testing.T) {
-	opts := &aetest.Options{StronglyConsistentDatastore: true}
-	c, err := aetest.NewContext(opts)
+	//	opts := &aetest.Options{StronglyConsistentDatastore: true}
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
 	g := FromContext(c)
 
 	hi := HasId{Name: "Foo"}
@@ -2338,11 +2348,11 @@ func TestCustomKindName(t *testing.T) {
 }
 
 func TestMultis(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
 	n := FromContext(c)
 
 	testAmounts := []int{1, 999, 1000, 1001, 1999, 2000, 2001, 2510}
@@ -2430,11 +2440,11 @@ type derivedChild struct {
 }
 
 func TestParents(t *testing.T) {
-	c, err := aetest.NewContext(nil)
+	c, closer, err := aetest.NewContext()
 	if err != nil {
 		t.Fatalf("Could not start aetest - %v", err)
 	}
-	defer c.Close()
+	defer closer()
 	n := FromContext(c)
 
 	r := &root{1, 10}
