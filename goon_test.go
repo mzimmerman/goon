@@ -955,6 +955,104 @@ func verifyMigration(t *testing.T, g *Goon, migA *MigrationA, debugInfo string) 
 	}
 }
 
+func TestTXNRace(t *testing.T) {
+	c, err := aetest.NewContext(nil)
+	if err != nil {
+		t.Fatalf("Could not start aetest - %v", err)
+	}
+	defer c.Close()
+	g := FromContext(c)
+
+	// Create & store some test data
+	hid := &HasId{Id: 1, Name: "foo"}
+	if _, err := g.Put(hid); err != nil {
+		t.Errorf("Unexpected error on Put %v", err)
+	}
+
+	// Get this data back, to populate caches
+	if err := g.Get(hid); err != nil {
+		t.Errorf("Unexpected error on Get %v", err)
+	}
+
+	// Clear the local cache, as we are testing for proper memcache usage
+	g.FlushLocalCache()
+
+	// Update the test data inside a transction
+	if err := g.RunInTransaction(func(tg *Goon) error {
+		// Get the current data
+		thid := &HasId{Id: 1}
+		if err := tg.Get(thid); err != nil {
+			t.Errorf("Unexpected error on TXN Get %v", err)
+			return err
+		}
+
+		// Update the data
+		thid.Name = "bar"
+		if _, err := tg.Put(thid); err != nil {
+			t.Errorf("Unexpected error on TXN Put %v", err)
+			return err
+		}
+
+		// Concurrent request emulation
+		//   We are running this inside the transaction block to always get the correct timing for testing.
+		//   In the real world, this concurrent request may run in another instance.
+		//   The transaction block may contain multiple other operations after the preceding Put(),
+		//   allowing for ample time for the concurrent request to run before the transaction is committed.
+		if err := g.Get(hid); err != nil {
+			t.Errorf("Unexpected error on Get %v", err)
+		} else if hid.Name != "foo" {
+			t.Errorf("Expected 'foo', got %v", hid.Name)
+		}
+
+		// Commit the transaction
+		return nil
+	}, &datastore.TransactionOptions{XG: false}); err != nil {
+		t.Errorf("Unexpected error with TXN - %v", err)
+	}
+
+	// Clear the local cache, as we are testing for proper memcache usage
+	g.FlushLocalCache()
+
+	// Get the data back again, to confirm it was changed in the transaction
+	if err := g.Get(hid); err != nil {
+		t.Errorf("Unexpected error on Get %v", err)
+	} else if hid.Name != "bar" {
+		t.Errorf("Expected 'bar', got %v", hid.Name)
+	}
+
+	// Clear the local cache, as we are testing for proper memcache usage
+	g.FlushLocalCache()
+
+	// Delete the test data inside a transction
+	if err := g.RunInTransaction(func(tg *Goon) error {
+		thid := &HasId{Id: 1}
+		if err := tg.Delete(tg.Key(thid)); err != nil {
+			t.Errorf("Unexpected error on TXN Delete %v", err)
+			return err
+		}
+
+		// Concurrent request emulation
+		if err := g.Get(hid); err != nil {
+			t.Errorf("Unexpected error on Get %v", err)
+		} else if hid.Name != "bar" {
+			t.Errorf("Expected 'bar', got %v", hid.Name)
+		}
+
+		// Commit the transaction
+		return nil
+	}, &datastore.TransactionOptions{XG: false}); err != nil {
+		t.Errorf("Unexpected error with TXN - %v", err)
+	}
+
+	// Clear the local cache, as we are testing for proper memcache usage
+	g.FlushLocalCache()
+
+	// Attempt to get the data back again, to confirm it was deleted in the transaction
+	if err := g.Get(hid); err != datastore.ErrNoSuchEntity {
+		t.Errorf("Expected ErrNoSuchEntity, got %v", err)
+	}
+}
+
 func TestNegativeCacheHit(t *testing.T) {
 	c, err := aetest.NewContext(nil)
 	if err != nil {
@@ -1758,7 +1856,7 @@ func TestGoon(t *testing.T) {
 	hasParentTest := &HasParent{}
 	fakeParent := datastore.NewKey(c, "FakeParent", "", 1, nil)
 	hasParentKey := datastore.NewKey(c, "HasParent", "", 2, fakeParent)
-	setStructKey(hasParentTest, hasParentKey)
+	n.setStructKey(hasParentTest, hasParentKey)
 	if hasParentTest.Id != 2 {
 		t.Errorf("setStructKey not setting stringid properly")
 	}
@@ -1766,7 +1864,7 @@ func TestGoon(t *testing.T) {
 		t.Errorf("setStructKey not setting parent properly")
 	}
 	hps := []HasParent{HasParent{}}
-	setStructKey(&hps[0], hasParentKey)
+	n.setStructKey(&hps[0], hasParentKey)
 	if hps[0].Id != 2 {
 		t.Errorf("setStructKey not setting stringid properly when src is a slice of structs")
 	}
@@ -1906,7 +2004,7 @@ func TestGoon(t *testing.T) {
 			}
 
 			putDest := reflect.New(reflect.TypeOf(gt.orig).Elem()).Interface().(GoonStore)
-			setStructKey(putDest, key)
+			n.setStructKey(putDest, key)
 			if hk, ok := putDest.(*HasKey); ok {
 				hk.P = nil
 			}
@@ -1923,10 +2021,11 @@ func TestGoon(t *testing.T) {
 		if gt.putErr {
 			continue // can't test GetAll on a struct that can't be put!
 		}
-		name := typeName(gt.orig)
-		if hk, ok := gt.orig.(*HasKind); ok {
-			name = hk.Kind
-		}
+		name := gt.orig.Data()
+		//		name := typeName(gt.orig)
+		//		if hk, ok := gt.orig.(*HasKind); ok {
+		//			name = hk.Kind
+		//		}
 		query := datastore.NewQuery(name)
 		if n.Key(gt.orig).Parent() == nil {
 			query = query.Filter("Name =", "orphan")
@@ -2193,6 +2292,51 @@ type GoonTest struct {
 	putErr bool
 }
 
+func prefixKindName(src interface{}) string {
+	return "prefix." + DefaultKindName(src)
+}
+
+func TestCustomKindName(t *testing.T) {
+	opts := &aetest.Options{StronglyConsistentDatastore: true}
+	c, err := aetest.NewContext(opts)
+	if err != nil {
+		t.Fatalf("Could not start aetest - %v", err)
+	}
+	defer c.Close()
+	g := FromContext(c)
+
+	hi := HasId{Name: "Foo"}
+
+	//gate
+	if kind := g.Kind(hi); kind != "HasId" {
+		t.Fatal("HasId King should not have a prefix, but instead is, ", kind)
+	}
+
+	g.KindNameResolver = prefixKindName
+
+	if kind := g.Kind(hi); kind != "prefix.HasId" {
+		t.Fatal("HasId King should have a prefix, but instead is, ", kind)
+	}
+
+	_, err = g.Put(&hi)
+
+	if err != nil {
+		t.Fatal("Should be able to put a record: ", err)
+	}
+
+	reget1 := []HasId{}
+	query := datastore.NewQuery("prefix.HasId")
+	query.GetAll(c, &reget1)
+
+	if len(reget1) != 1 {
+		t.Fatal("Should have 1 record stored in datastore ", reget1)
+	}
+
+	if reget1[0].Name != "Foo" {
+		t.Fatal("Name should be Foo ", reget1[0].Name)
+	}
+}
+
 func TestMultis(t *testing.T) {
 	c, err := aetest.NewContext(nil)
 	if err != nil {
@@ -2263,5 +2407,70 @@ func TestMultis(t *testing.T) {
 		} else if x != 1 {
 			t.Errorf("Did not return a multierror on fetch but when fetching %d objects, received - %v", x, merr)
 		}
+	}
+}
+
+type root struct {
+	Id   int64 `datastore:"-" goon:"id"`
+	Data int
+}
+
+type normalChild struct {
+	Id     int64          `datastore:"-" goon:"id"`
+	Parent *datastore.Key `datastore:"-" goon:"parent"`
+	Data   int
+}
+
+type coolKey *datastore.Key
+
+type derivedChild struct {
+	Id     int64   `datastore:"-" goon:"id"`
+	Parent coolKey `datastore:"-" goon:"parent"`
+	Data   int
+}
+
+func TestParents(t *testing.T) {
+	c, err := aetest.NewContext(nil)
+	if err != nil {
+		t.Fatalf("Could not start aetest - %v", err)
+	}
+	defer c.Close()
+	n := FromContext(c)
+
+	r := &root{1, 10}
+	rootKey, err := n.Put(r)
+	if err != nil {
+		t.Fatalf("couldn't Put(%+v)", r)
+	}
+
+	// Put exercises both get and set, since Id is uninitialized
+	nc := &normalChild{0, rootKey, 20}
+	nk, err := n.Put(nc)
+	if err != nil {
+		t.Fatalf("couldn't Put(%+v)", nc)
+	}
+	if nc.Parent == rootKey {
+		t.Fatalf("derived parent key pointer value didn't change")
+	}
+	if !(*datastore.Key)(nc.Parent).Equal(rootKey) {
+		t.Fatalf("parent of key not equal '%s' v '%s'! ", (*datastore.Key)(nc.Parent), rootKey)
+	}
+	if !nk.Parent().Equal(rootKey) {
+		t.Fatalf("parent of key not equal '%s' v '%s'! ", nk, rootKey)
+	}
+
+	dc := &derivedChild{0, (coolKey)(rootKey), 12}
+	dk, err := n.Put(dc)
+	if err != nil {
+		t.Fatalf("couldn't Put(%+v)", dc)
+	}
+	if dc.Parent == rootKey {
+		t.Fatalf("derived parent key pointer value didn't change")
+	}
+	if !(*datastore.Key)(dc.Parent).Equal(rootKey) {
+		t.Fatalf("parent of key not equal '%s' v '%s'! ", (*datastore.Key)(dc.Parent), rootKey)
+	}
+	if !dk.Parent().Equal(rootKey) {
+		t.Fatalf("parent of key not equal '%s' v '%s'! ", dk, rootKey)
 	}
 }

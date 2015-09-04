@@ -59,6 +59,10 @@ type Goon struct {
 	inTransaction bool
 	toSet         map[string]interface{}
 	toDelete      map[string]bool
+	toDeleteMC    map[string]bool
+	// KindNameResolver is used to determine what Kind to give an Entity.
+	// Defaults to DefaultKindName
+	KindNameResolver KindNameResolver
 }
 
 func memkey(k *datastore.Key) string {
@@ -72,10 +76,12 @@ func NewGoon(r *http.Request) *Goon {
 }
 
 // FromContext creates a new Goon object from the given appengine Context.
+// Useful with profiling packages like appstats.
 func FromContext(c appengine.Context) *Goon {
 	return &Goon{
-		Context: c,
-		cache:   make(map[string]interface{}),
+		Context:          c,
+		cache:            make(map[string]interface{}),
+		KindNameResolver: DefaultKindName,
 	}
 }
 
@@ -154,15 +160,25 @@ func (g *Goon) RunInTransaction(f func(tg *Goon) error, opts *datastore.Transact
 	var ng *Goon
 	err := datastore.RunInTransaction(g.Context, func(tc appengine.Context) error {
 		ng = &Goon{
-			Context:       tc,
-			inTransaction: true,
-			toSet:         make(map[string]interface{}),
-			toDelete:      make(map[string]bool),
+			Context:          tc,
+			inTransaction:    true,
+			toSet:            make(map[string]interface{}),
+			toDelete:         make(map[string]bool),
+			toDeleteMC:       make(map[string]bool),
+			KindNameResolver: g.KindNameResolver,
 		}
 		return f(ng)
 	}, opts)
 
 	if err == nil {
+		if len(ng.toDeleteMC) > 0 {
+			var memkeys []string
+			for k := range ng.toDeleteMC {
+				memkeys = append(memkeys, k)
+			}
+			memcache.DeleteMulti(g.Context, memkeys)
+		}
+
 		g.cacheLock.Lock()
 		defer g.cacheLock.Unlock()
 		for k, v := range ng.toSet {
@@ -212,8 +228,16 @@ func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 		}
 	}
 
-	// Memcache needs to be updated after the datastore to prevent a common race condition
-	defer memcache.DeleteMulti(g.Context, memkeys)
+	// Memcache needs to be updated after the datastore to prevent a common race condition,
+	// where a concurrent request will fetch the not-yet-updated data from the datastore
+	// and populate memcache with it.
+	if g.inTransaction {
+		for _, mk := range memkeys {
+			g.toDeleteMC[mk] = true
+		}
+	} else {
+		defer memcache.DeleteMulti(g.Context, memkeys)
+	}
 
 	v := reflect.Indirect(reflect.ValueOf(src))
 	multiErr, any := make(appengine.MultiError, len(keys)), false
@@ -248,7 +272,7 @@ func (g *Goon) PutMulti(src interface{}) ([]*datastore.Key, error) {
 				}
 				vi := v.Index(lo + i).Interface()
 				if key.Incomplete() {
-					setStructKey(vi, rkeys[i])
+					g.setStructKey(vi, rkeys[i])
 					keys[i] = rkeys[i]
 				}
 				if g.inTransaction {
@@ -593,8 +617,16 @@ func (g *Goon) DeleteMulti(keys []*datastore.Key) error {
 	}
 	g.cacheLock.Unlock()
 
-	// Memcache needs to be updated after the datastore to prevent a common race condition
-	defer memcache.DeleteMulti(g.Context, memkeys)
+	// Memcache needs to be updated after the datastore to prevent a common race condition,
+	// where a concurrent request will fetch the not-yet-updated data from the datastore
+	// and populate memcache with it.
+	if g.inTransaction {
+		for _, mk := range memkeys {
+			g.toDeleteMC[mk] = true
+		}
+	} else {
+		defer memcache.DeleteMulti(g.Context, memkeys)
+	}
 
 	multiErr, any := make(appengine.MultiError, len(keys)), false
 	goroutines := (len(keys)-1)/deleteMultiLimit + 1
